@@ -1,0 +1,426 @@
+---
+format: 
+  html:
+    number-sections: true
+
+title: "Take-home Exercise 3.2"
+author: "Tai Yu Ying"
+date: "Oct 21 2024"
+date-modified: "last-modified"
+execute: 
+  eval: true
+  echo: true
+  message: false
+  freeze: true
+---
+
+## Data Upload and Initial Setup
+
+### Installing and launching the R packages
+
+In this exercise, the following R packages will be used, they are:
+
+-   **tidyverse**: A collection of R packages (including `dplyr`, `ggplot2`, `tidyr`, and more) for data manipulation, visualization, and cleaning. It is essential for streamlined data handling and is widely used for data wrangling and efficient manipulation of data frames.
+-   **sf (Simple Features)**: A package that provides a standard approach for handling spatial data, such as shapefiles and geographic coordinates, in R. It’s useful for transforming data into spatial formats and performing spatial operations.
+-   **httr**: Facilitates HTTP requests, enabling access to external APIs to fetch locational or additional data about amenities or other contextual factors that may influence housing prices.
+-   **jsonlite**: A package used for parsing JSON data, often encountered in web APIs. This package is useful for converting JSON data into R data structures, allowing for seamless integration of JSON-formatted locational or contextual data.
+-   **rvest**: Supports web scraping, making it easy to extract data from websites. This can be useful if additional information from web sources (such as lists of nearby amenities or environmental factors) is required for analysis.
+-   **tmap**: A powerful package for creating static and interactive thematic maps. It’s helpful for visualizing spatial patterns, clusters, and trends in housing prices or other variables across geographic areas.
+-   **leaflet**: A mapping package focused on interactive maps. It is useful for creating dynamic spatial visualizations, which can help communicate results effectively to stakeholders.
+-   **ggstatsplot**: An extension of `ggplot2` for enhanced statistical visualizations, adding statistical information and context to graphs. It’s useful for presenting both spatial and non-spatial relationships within the dataset.
+-   **spdep**: Used for spatial dependency analysis, `spdep` provides tools for calculating spatial autocorrelation (e.g., Moran's I) and creating spatial weights, essential for analyzing spatial relationships among housing prices or other spatial data points.
+-   **spgwr**: Implements Geographically Weighted Regression (GWR) in R. This is useful for local regression analyses that reveal spatial variations in relationships, such as the effect of locational and structural factors on housing prices.
+-   **olsrr**: A package for ordinary least squares (OLS) regression diagnostics, which can aid in assessing model assumptions, identifying influential observations, and evaluating model performance.
+-   **gtsummary**: Provides summary tables and statistics in a clean format, making it easy to generate quick overviews of data or model outputs. Useful for generating reports with organized statistical summaries.
+-   **GWmodel**: A specialized package for geographically weighted models, including Geographically Weighted Random Forests (GWRF), which are advanced models that capture complex spatial patterns in data.
+-   **rsample**: A package for creating resampling objects, which is useful for cross-validation and other validation strategies to assess model performance on different subsets of data.
+-   **ranger**: An efficient implementation of the Random Forest algorithm in R, which can handle large datasets and be applied in predictive modeling tasks, including spatial modeling when combined with `GWmodel`.
+-   **spatialML**: Supports machine learning on spatial data, providing tools that are specifically designed to handle the unique characteristics of spatial data in predictive modeling.
+
+```{r}
+pacman::p_load(tidyverse, sf, httr, jsonlite, rvest, tmap, leaflet, ggstatsplot, spdep, spgwr, olsrr, gtsummary, GWmodel, rsample, ranger, SpatialML)
+```
+
+## Building Random Forest Model
+
+### Data Sampling
+
+The entire data are split into training and test data sets with 65% and 35% respectively by using *initial_split()* of **rsample** package. rsample is one of the package of tigymodels.
+
+```{r}
+#| eval: false
+set.seed(1234)
+resale_split <- initial_split(resale_final, 
+                              prop = 6.5/10,)
+train_data <- training(resale_split)
+test_data <- testing(resale_split)
+```
+
+```{r}
+#| eval: false
+write_rds(train_data, "data/HDB/rds/train_data.rds")
+write_rds(test_data, "data/HDB/rds/test_data.rds")
+```
+
+```{r}
+train_data <- read_rds("data/HDB/rds/train_data.rds")
+test_data <- read_rds("data/HDB/rds/test_data.rds")
+```
+
+### Preparing coordinates data
+
+#### Extracting coordinates data
+
+The code chunk below extract the x,y coordinates of the full, training and test data sets.
+
+```{r}
+#| eval: false
+coords <- st_coordinates(resale_final)
+coords_train <- st_coordinates(train_data)
+coords_test <- st_coordinates(test_data)
+```
+
+Before continue, we write all the output into rds for future used.
+
+```{r}
+#| eval: false
+coords_train <- write_rds(coords_train, "data/HDB/rds/coords_train.rds" )
+coords_test <- write_rds(coords_test, "data/HDB/rds/coords_test.rds" )
+```
+
+```{r}
+coords_train <- read_rds("data/HDB/rds/coords_train.rds")
+coords_test <- read_rds("data/HDB/rds/coords_test.rds")
+```
+
+#### Dropping geometry field
+
+First, we will drop geometry column of the sf data.frame by using `st_drop_geometry()` of sf package.
+
+```{r}
+train_data <- train_data %>% 
+  st_drop_geometry()
+```
+
+### Calibrating Random Forest Model
+
+We'll calibrate a model to predict HDB resale price by using random forest function of [**ranger**](https://cran.r-project.org/web/packages/ranger/index.html) package.
+
+```{r}
+#| eval: false
+set.seed(1234)
+# Convert columns to factors if they are not already
+train_data$flat_type <- as.factor(train_data$flat_type)
+train_data$region <- as.factor(train_data$region)
+train_data$flat_model <- as.factor(train_data$flat_model)
+
+# Run the random forest model
+set.seed(1234)
+rf <- ranger(formula = resale_price ~ 
+                 floor_area_sqm + 
+                 storey_avg + 
+                 remaining_lease_total_mths + 
+                 proximity_to_mrt + 
+                 proximity_to_goodprisch + 
+                 within_1km_prisch + 
+                 proximity_to_eldercare + 
+                 proximity_to_CHAS + 
+                 proximity_to_spmrkt + 
+                 proximity_to_hawker + 
+                 proximity_to_parks + 
+                 proximity_to_childcare + 
+                 within_350m_childcare + 
+                 proximity_to_busstop + 
+                 within_350m_busstop + 
+                 proximity_to_mall + 
+                 flat_type + 
+                 region + 
+                 flat_model,  # Assuming 'flat_type', 'region'                  , and 'flat_model' are factors
+                 data = train_data
+)
+```
+
+```{r}
+write_rds(rf, "data/HDB/rds/rf.rds")
+```
+
+```{r}
+rf <- read_rds("data/HDB/rds/rf.rds")
+```
+
+```{r}
+# Check the model output
+rf
+```
+
+### Key Insights:
+
+1.  **Call**: This shows the formula and data used for the model. It confirms that `resale_price` is the dependent variable, and the other variables in the formula are predictors.
+
+2.  **Type**: The model is a regression model, meaning it predicts a continuous outcome (resale price) based on the input features.
+
+3.  **Number of Trees**: The model used 500 trees, which is typical for a random forest model to ensure stability and robustness in predictions.
+
+4.  **Sample Size**: The model trained on 15,310 data points. This is the total number of observations in the training dataset after any preprocessing.
+
+5.  **Number of Independent Variables**: There are 19 predictor variables used in the model. These include both numerical features (e.g., `floor_area_sqm`, `remaining_lease_total_mths`) and categorical features (e.g., `flat_type`, `region`, `flat_model`).
+
+6.  **Mtry**: This is the number of variables randomly sampled as candidates at each split, set to 4 in this case. In regression, it’s generally recommended to set `mtry` to around the square root of the number of predictors, which the model has done here.
+
+7.  **Target Node Size**: This is the minimum number of data points in a node before a split is attempted. A target node size of 5 indicates that the trees were allowed to grow fairly deep, capturing more nuances in the data.
+
+8.  **Variable Importance Mode**: The model did not calculate variable importance metrics in this run (`none`). To get insights into which variables contribute most to the model, you could rerun the model with variable importance set to `impurity` or `permutation`.
+
+9.  **Out-of-Bag (OOB) Prediction Error (MSE)**: The mean squared error (MSE) for the model based on out-of-bag samples (i.e., samples not used in each tree’s training) is about 135,242,786.4. This metric indicates the average squared difference between the predicted and actual values. A lower MSE indicates a better model fit. However, given that the actual resale prices could vary widely, the raw MSE value alone is less intuitive than its square root, which would give the average error in the same units as `resale_price`.
+
+10. **Out-of-Bag R-Squared (OOB R²)**: The OOB R² of 0.9481 indicates that approximately 94.8% of the variance in resale prices can be explained by this model. This is a high R² value, suggesting that the model fits the data well and that the predictors capture a significant portion of the variability in the resale prices.
+
+::: callout-tip
+#### Summary
+
+The model explains a large portion of the variability in resale prices (OOB R² of 94.8%), which suggests that the selected predictors are well-suited for this task. However, the MSE suggests some degree of error in individual predictions, which is typical with high-dimensional and complex datasets. If you want to understand which variables contribute most to the predictions, consider recalculating the model with variable importance metrics enabled. This would allow you to identify the predictors with the most significant impact on resale prices and refine the model if needed.
+:::
+
+## Calibrating gwr predictive method
+
+We'll calibrate a model to predict HDB resale price by using geographically weighted regression method of [**GWmodel**](https://cran.r-project.org/web/packages/GWmodel/index.html) package.
+
+Due to time constraint, we'll select "West" region with "Standard" flats (an affordable segment) for our prediction model.
+
+### Data Sampling
+
+The entire data are split into training and test data sets with 65% and 35% respectively by using *initial_split()* of **rsample** package. rsample is one of the package of tigymodels.
+
+```{r}
+#| eval: false
+set.seed(1234)
+W_split <- initial_split(West_Simplified, 
+                              prop = 6.5/10,)
+Wtrain_data <- training(W_split)
+Wtest_data <- testing(W_split)
+```
+
+```{r}
+#| eval: false
+write_rds(Wtrain_data, "data/HDB/rds/Wtrain_data.rds")
+write_rds(Wtest_data, "data/HDB/rds/Wtest_data.rds")
+```
+
+```{r}
+Wtrain_data <- read_rds("data/HDB/rds/Wtrain_data.rds")
+Wtest_data <- read_rds("data/HDB/rds/Wtest_data.rds")
+```
+
+### Converting the sf data.frame to SpatialPointDataFrame
+
+```{r}
+train_data_sp <- as_Spatial(Wtrain_data)
+train_data_sp
+```
+
+### Computing adaptive bandwidth
+
+Next, `bw.gwr()` of **GWmodel** package will be used to determine the optimal bandwidth to be used.
+
+The code chunk below is used to determine adaptive bandwidth and CV method is used to determine the optimal bandwidth.
+
+```{r}
+#| eval: false
+set.seed(1234)
+bw_adaptive <- bw.gwr(formula = resale_price ~ 
+                 floor_area_sqm + 
+                 storey_avg + 
+                 remaining_lease_total_mths + 
+                 proximity_to_mrt + 
+                 proximity_to_goodprisch + 
+                 within_1km_prisch + 
+                 proximity_to_eldercare + 
+                 proximity_to_CHAS + 
+                 proximity_to_spmrkt + 
+                 proximity_to_hawker + 
+                 proximity_to_parks + 
+                 proximity_to_childcare + 
+                 within_350m_childcare + 
+                 proximity_to_busstop + 
+                 within_350m_busstop + 
+                 proximity_to_mall,
+                 data=train_data_sp,
+                 approach="CV",
+                 kernel="gaussian",
+                 adaptive=TRUE,
+                 longlat=FALSE)
+```
+
+![](images/Snipaste_2024-11-11_12-34-41.png)
+
+This output shows the cross-validation (CV) scores associated with different adaptive bandwidth values in a Geographically Weighted Regression (GWR) or a similar spatial model. Here's how to interpret it:
+
+1.  **Adaptive Bandwidth Values**: The bandwidth here represents the number of nearest neighbors considered in the localized models. Smaller bandwidths mean the model is more sensitive to local variations, while larger bandwidths make the model more global.
+
+2.  **CV Score**: The CV score measures how well each bandwidth performs in cross-validation, with a lower score indicating better model performance. The score helps to balance model complexity and prediction accuracy, where lower values typically indicate a better fit to the data.
+
+3.  **Selecting the Optimal Bandwidth**: From the list, you would typically select the bandwidth with the lowest CV score as the optimal choice. In this case, the bandwidth with a CV score of `20226641242` (appearing twice at bandwidths of 40) is the lowest observed. This suggests that a bandwidth of 40 may be the best option for balancing model accuracy and generalization.
+
+In summary, based on this output, you would likely choose an adaptive bandwidth of 40, as it yields the lowest CV score and therefore the best cross-validated performance for your model.
+
+Let’s save the model output by using the code chunk below.
+
+```{r}
+#| eval: false
+write_rds(bw_adaptive, "data/HDB/rds/bw_adaptive.rds")
+```
+
+The code chunk below can be used to retrieve the save model in future.
+
+```{r}
+bw_adaptive <- read_rds("data/HDB/rds/bw_adaptive.rds")
+```
+
+### Constructing the adaptive bandwidth gwr model
+
+Now, we can go ahead to calibrate the gwr-based hedonic pricing model by using adaptive bandwidth and Gaussian kernel as shown in the code chunk below.
+
+```{r}
+#| eval: false
+gwr_adaptive <- gwr.basic(formula = resale_price ~ 
+                 floor_area_sqm + 
+                 storey_avg + 
+                 remaining_lease_total_mths + 
+                 proximity_to_mrt + 
+                 proximity_to_goodprisch + 
+                 within_1km_prisch + 
+                 proximity_to_eldercare + 
+                 proximity_to_CHAS + 
+                 proximity_to_spmrkt + 
+                 proximity_to_hawker + 
+                 proximity_to_parks + 
+                 proximity_to_childcare + 
+                 within_350m_childcare + 
+                 proximity_to_busstop + 
+                 within_350m_busstop + 
+                 proximity_to_mall,
+                          data=train_data_sp,
+                          bw=bw_adaptive, 
+                          kernel = 'gaussian', 
+                          adaptive=TRUE,
+                          longlat = FALSE)
+```
+
+The code chunk below will be used to save the model in rds format for future use.
+
+```{r}
+#| eval: false
+write_rds(gwr_adaptive, "data/HDB/rds/gwr_adaptive.rds")
+```
+
+### Retrieve gwr output object
+
+The code chunk below will be used to retrieve the save gwr model object.
+
+```{r}
+gwr_adaptive <- read_rds("data/HDB/rds/gwr_adaptive.rds")
+```
+
+The code below can be used to display the model output.
+
+```{r}
+gwr_adaptive
+```
+
+### Converting the test data from sf data.frame to SpatialPointDataFrame
+
+```{r}
+test_data_sp <- Wtest_data %>%
+  as_Spatial()
+test_data_sp
+```
+
+### Computing predicted values of the test data
+
+```{r}
+#| eval: false 
+gwr_pred <- gwr.predict(formula = resale_price ~ 
+                 floor_area_sqm + 
+                 storey_avg + 
+                 remaining_lease_total_mths + 
+                 proximity_to_mrt + 
+                 proximity_to_goodprisch + 
+                 within_1km_prisch + 
+                 proximity_to_eldercare + 
+                 proximity_to_CHAS + 
+                 proximity_to_spmrkt + 
+                 proximity_to_hawker + 
+                 proximity_to_parks + 
+                 proximity_to_childcare + 
+                 within_350m_childcare + 
+                 proximity_to_busstop + 
+                 within_350m_busstop + 
+                 proximity_to_mall,
+                        data=train_data_sp, 
+                        predictdata = test_data_sp, 
+                        bw=40, 
+                        kernel = 'gaussian', 
+                        adaptive=TRUE, 
+                        longlat = FALSE)
+```
+
+The code chunk below will be used to save the model in rds format for future use.
+
+```{r}
+#| eval: false 
+write_rds(gwr_pred, "data/HDB/rds/gwr_pred.rds")
+```
+
+The code chunk below will be used to retrieve the save gwr model object.
+
+```{r}
+gwr_pred <- read_rds("data/HDB/rds/gwr_pred.rds")
+```
+
+The code below can be used to display the model output.
+
+```{r}
+gwr_pred
+```
+
+Each row under the summary represents a predictor variable, with corresponding statistics for the estimated coefficients across locations:
+
+-   **Min, 1st Qu., Median, 3rd Qu., Max**: These values show the distribution of coefficient estimates for each predictor variable across all locations. A wide range (difference between Min and Max) suggests substantial spatial variation in how a predictor influences `resale_price` in different areas.
+
+#### Interpretations:
+
+-   **floor_area_sqm_coef**: The coefficient for `floor_area_sqm` has a range from approximately 4,027 to 5,513, indicating that each square meter of floor area affects resale price differently across locations. Higher coefficients in some areas imply that additional floor space increases resale price more significantly there.
+
+-   **proximity_to_mrt_coef**: The coefficient ranges from -17,474 to -1,608, meaning proximity to MRT (mass rapid transit) stations generally decreases resale price (negative impact). The wide range suggests that this impact is more substantial in some areas than others.
+
+-   **proximity_to_hawker_coef**: The coefficient for proximity to hawker centers has a range from approximately -28,355 to -14,625. This consistent negative impact across locations could suggest that proximity to hawker centers is generally not seen as favorable for resale prices, but the extent varies geographically.
+
+-   **proximity_to_busstop_coef**: The coefficients for proximity to bus stops have positive values ranging from 50.3 to 2,568. This indicates that being close to bus stops might have a small positive effect on resale prices, with stronger effects in certain locations.
+
+Generally, a wide range of coefficient values for a predictor implies significant spatial variation, meaning the predictor’s influence on `resale_price` depends heavily on location.
+
+#### Results of GWR Prediction
+
+-   **Predicted Resale Prices**:
+
+    -   **Min**: 305,213
+
+    -   **1st Quartile**: 332,925
+
+    -   **Median**: 435,699
+
+    -   **3rd Quartile**: 498,332
+
+    -   **Max**: 664,408
+
+    These values represent the distribution of the predicted resale prices across all locations based on the GWR model. They give an idea of the range of resale prices in the dataset after considering spatial effects.
+
+### Key Takeaways
+
+-   **Spatial Variation**: The GWR model reveals that the impact of predictors on `resale_price` is not uniform across locations. This is particularly important for variables like `floor_area_sqm`, `proximity_to_mrt`, and `proximity_to_hawker`, which show significant variability in coefficients.
+
+-   **Local Effects**: GWR captures local effects better than a global model (like ordinary least squares) by adjusting the coefficients for each location, providing insights into how property characteristics affect resale prices differently across regions.
+
+-   **Interpretation for Decision-Making**: Real estate developers, urban planners, or policymakers could use this information to understand the varying influences of proximity to amenities or property features on housing prices and plan accordingly for different neighborhoods.
+
+This output suggests that the GWR model successfully captures the local variations in `resale_price`, making it a suitable approach for analyzing spatially heterogeneous data like property prices.

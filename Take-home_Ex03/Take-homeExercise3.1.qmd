@@ -1,0 +1,1396 @@
+---
+format: 
+  html:
+   number-sections: true
+
+title: "Take-home Exercise 3.1"
+author: "Tai Yu Ying"
+date: "Oct 21 2024"
+date-modified: "last-modified"
+execute: 
+  eval: true
+  echo: true
+  message: false
+  freeze: true
+---
+
+## Overview
+
+### Objective
+
+The goal of this analysis is to predict the resale prices of Housing and Development Board (HDB) flats in Singapore for the period of July to September 2024. Using data from 2023, we aim to build a predictive model that considers both structural and locational factors, capturing the unique spatial characteristics that influence HDB resale prices. This model will provide valuable insights for:
+
+-   Potential buyers looking to make informed investment decisions
+
+-   Real estate investors seeking accurate market forecasts
+
+-   Policymakers aiming to understand spatial trends in housing affordability
+
+### Context
+
+Housing in Singapore, particularly HDB flats, represents a critical component of household wealth and serves as a significant investment for most residents. Given Singapore’s compact urban environment, several factors play a role in determining HDB resale prices:
+
+-   **Locational Factors**: Proximity to amenities like public transportation (MRT), shopping centers, and quality schools
+
+-   **Structural Factors**: Attributes such as the flat’s size, age, and floor level
+
+-   **Macro-level Influences**: Economic conditions and government policies impacting the housing market
+
+Accurately predicting resale prices is essential not only for financial planning and investment but also for urban planning and policy-making to ensure sustainable housing affordability.
+
+### Methodology Overview
+
+Traditional models like Ordinary Least Squares (OLS) regression have limitations when applied to spatial data, as they often ignore spatial heterogeneity and autocorrelation. These limitations include:
+
+-   **Spatial Heterogeneity**: Relationships between housing prices and influencing factors vary across locations.
+
+-   **Spatial Autocorrelation**: Housing prices in nearby areas tend to be similar, leading to clustering effects.
+
+To address these challenges, we will employ **Geographically Weighted Models (GWMs)**, specifically:
+
+-   **Geographically Weighted Regression (GWR)**, which captures spatial variability in linear relationships.
+
+By comparing the performance of OLS and GWR models, this study will demonstrate the effectiveness of spatially weighted approaches for real estate price prediction in Singapore.
+
+## Data Upload and Initial Setup
+
+### Installing and launching the R packages
+
+In this exercise, the following R packages will be used, they are:
+
+-   **tidyverse**: A collection of R packages (including `dplyr`, `ggplot2`, `tidyr`, and more) for data manipulation, visualization, and cleaning. It is essential for streamlined data handling and is widely used for data wrangling and efficient manipulation of data frames.
+-   **sf (Simple Features)**: A package that provides a standard approach for handling spatial data, such as shapefiles and geographic coordinates, in R. It’s useful for transforming data into spatial formats and performing spatial operations.
+-   **httr**: Facilitates HTTP requests, enabling access to external APIs to fetch locational or additional data about amenities or other contextual factors that may influence housing prices.
+-   **jsonlite**: A package used for parsing JSON data, often encountered in web APIs. This package is useful for converting JSON data into R data structures, allowing for seamless integration of JSON-formatted locational or contextual data.
+-   **rvest**: Supports web scraping, making it easy to extract data from websites. This can be useful if additional information from web sources (such as lists of nearby amenities or environmental factors) is required for analysis.
+-   **tmap**: A powerful package for creating static and interactive thematic maps. It’s helpful for visualizing spatial patterns, clusters, and trends in housing prices or other variables across geographic areas.
+-   **leaflet**: A mapping package focused on interactive maps. It is useful for creating dynamic spatial visualizations, which can help communicate results effectively to stakeholders.
+-   **ggstatsplot**: An extension of `ggplot2` for enhanced statistical visualizations, adding statistical information and context to graphs. It’s useful for presenting both spatial and non-spatial relationships within the dataset.
+-   **spdep**: Used for spatial dependency analysis, `spdep` provides tools for calculating spatial autocorrelation (e.g., Moran's I) and creating spatial weights, essential for analyzing spatial relationships among housing prices or other spatial data points.
+-   **spgwr**: Implements Geographically Weighted Regression (GWR) in R. This is useful for local regression analyses that reveal spatial variations in relationships, such as the effect of locational and structural factors on housing prices.
+-   **olsrr**: A package for ordinary least squares (OLS) regression diagnostics, which can aid in assessing model assumptions, identifying influential observations, and evaluating model performance.
+-   **gtsummary**: Provides summary tables and statistics in a clean format, making it easy to generate quick overviews of data or model outputs. Useful for generating reports with organized statistical summaries.
+-   **GWmodel**: A specialized package for geographically weighted models, including Geographically Weighted Random Forests (GWRF), which are advanced models that capture complex spatial patterns in data.
+-   **rsample**: A package for creating resampling objects, which is useful for cross-validation and other validation strategies to assess model performance on different subsets of data.
+-   **ranger**: An efficient implementation of the Random Forest algorithm in R, which can handle large datasets and be applied in predictive modeling tasks, including spatial modeling when combined with `GWmodel`.
+-   **spatialML**: Supports machine learning on spatial data, providing tools that are specifically designed to handle the unique characteristics of spatial data in predictive modeling.
+
+```{r}
+pacman::p_load(tidyverse, sf, httr, jsonlite, rvest, tmap, leaflet, ggstatsplot, spdep, spgwr, olsrr, gtsummary, GWmodel, rsample, ranger, SpatialML)
+```
+
+## Data Import and Preparation
+
+### Primary Dataset
+
+**HDB Resale Flat Prices**: The primary dataset for this analysis is the HDB Resale Flat Prices dataset available from [Data.gov.sg](https://data.gov.sg/). This dataset provides information on resale transactions for HDB flats, including price, location, flat type, and structural details. Key fields in this dataset that will be used for the analysis include:
+
+-   **Flat Type**: Differentiates between three-room, four-room, and five-room flats, which are the focus of the study.
+
+-   **Transaction Price**: The resale price of each HDB flat, which is the dependent variable to be predicted.
+
+-   **Floor Area and Floor Level**: Measures of the flat’s size and position, which are structural factors that impact value.
+
+-   **Remaining Lease**: The number of years left on the lease, crucial for pricing as HDB flats depreciate over time.
+
+```{r}
+resale <- read_csv("data/HDB/rawdata/resale.csv") %>%
+  filter(
+    month >= "2023-01" & month <= "2023-12",
+    flat_type %in% c("3 ROOM", "4 ROOM", "5 ROOM")
+  )
+```
+
+The regional classification data for Singapore was sourced from [Wikipedia](https://en.wikipedia.org/wiki/Planning_areas_of_Singapore), a widely recognized reference for administrative and geographical information. This dataset delineates Singapore into five primary regions: North, North-East, East, Central, and West, and assigns specific towns or planning areas to each region. Incorporating this classification enables a structured spatial analysis by providing a consistent regional framework. By joining this regional data with the primary dataset based on town names, the analysis can account for spatial heterogeneity and facilitate comparisons across regions, thus enhancing the rigor and depth of socio-economic or real estate trend analysis within Singapore.
+
+```{r}
+region <- read_csv("data/HDB/rawdata/region.csv") 
+```
+
+```{r}
+#| eval: false
+# Define a helper function to capitalize the first letter of each word
+capitalize_words <- function(x) {
+  sapply(strsplit(x, " "), function(words) {
+    paste(toupper(substring(words, 1, 1)), tolower(substring(words, 2)), sep = "", collapse = " ")
+  })
+}
+
+# Apply the helper function to standardize the `town` column to `region`
+region <- region %>%
+  mutate(town = capitalize_words(town))
+```
+
+```{r}
+#| eval: false
+resale_tidy <- resale %>%
+  
+  # Create a new `address` column by combining `block` and `street_name`
+  mutate(address = paste(block, street_name)) %>%
+  
+  # Extract the first two characters of `remaining_lease` as years and convert to integer
+  mutate(remaining_lease_yr = as.integer(
+    str_sub(remaining_lease, 0, 2))) %>%
+  
+  # Extract characters from position 9 to 11 of `remaining_lease` as months and convert to integer , default to 0 if missing
+  mutate(remaining_lease_mth = if_else(is.na(as.integer(str_sub(remaining_lease, 9, 11))), 
+                                       0, 
+                                       as.integer(str_sub(remaining_lease, 9, 11)))) %>%
+  
+  # Apply the helper function to standardize the `town` column in `resale_tidy` dataset
+  mutate(town = capitalize_words(town)) %>%
+
+  # Perform the join
+  left_join(region, by = "town") %>%
+  
+  # Manually assign "Central" region to specific towns after the join
+  mutate(region = ifelse(town %in% c("Central Area", "Kallang/whampoa"), "Central", region)) %>%
+  
+  # Calculate total remaining lease in months by converting years to months and adding the extracted months
+  mutate(
+    remaining_lease_total_mths = (remaining_lease_yr * 12) + remaining_lease_mth
+  ) %>%
+  
+  # Remove the intermediate columns `remaining_lease_yr` and `remaining_lease_mth`
+  select(-remaining_lease_yr, -remaining_lease_mth) %>%
+  
+  # Split `storey_range` into minimum and maximum storey columns
+  # Extract the first two characters of `storey_range` as the minimum storey level
+  mutate(storey_min = as.integer(str_sub(storey_range, 1, 2))) %>%
+  
+  # Extract the last two characters of `storey_range` as the maximum storey level
+  mutate(storey_max = as.integer(str_sub(storey_range, 7, 8))) %>%
+  
+  # Calculate the average storey level by averaging `storey_min` and `storey_max`
+  mutate(
+    storey_avg = (storey_min + storey_max) / 2
+  )
+```
+
+```{r}
+#| eval: false
+write_rds(resale_tidy, "data/HDB/rds/resale_tidy.rds")
+```
+
+```{r}
+resale_tidy <- read_rds("data/HDB/rds/resale_tidy.rds")
+```
+
+```{r}
+#| eval: false
+add_list <- sort(unique(resale_tidy$address))
+```
+
+```{r}
+#| eval: false
+get_coords <- function(add_list){
+  
+  # Create a data frame to store all retrieved coordinates
+  postal_coords <- data.frame()
+    
+  for (i in add_list){
+    #print(i)
+
+    r <- GET('https://www.onemap.gov.sg/api/common/elastic/search?',
+           query=list(searchVal=i,
+                     returnGeom='Y',
+                     getAddrDetails='Y'))
+    data <- fromJSON(rawToChar(r$content))
+    found <- data$found
+    res <- data$results
+    
+    # Create a new data frame for each address
+    new_row <- data.frame()
+    
+    # If single result, append 
+    if (found == 1){
+      postal <- res$POSTAL 
+      lat <- res$LATITUDE
+      lng <- res$LONGITUDE
+      new_row <- data.frame(address= i, 
+                            postal = postal, 
+                            latitude = lat, 
+                            longitude = lng)
+    }
+    
+    # If multiple results, drop NIL and append top 1
+    else if (found > 1){
+      # Remove those with NIL as postal
+      res_sub <- res[res$POSTAL != "NIL", ]
+      
+      # Set as NA first if no Postal
+      if (nrow(res_sub) == 0) {
+          new_row <- data.frame(address= i, 
+                                postal = NA, 
+                                latitude = NA, 
+                                longitude = NA)
+      }
+      
+      else{
+        top1 <- head(res_sub, n = 1)
+        postal <- top1$POSTAL 
+        lat <- top1$LATITUDE
+        lng <- top1$LONGITUDE
+        new_row <- data.frame(address= i, 
+                              postal = postal, 
+                              latitude = lat, 
+                              longitude = lng)
+      }
+    }
+
+    else {
+      new_row <- data.frame(address= i, 
+                            postal = NA, 
+                            latitude = NA, 
+                            longitude = NA)
+    }
+    
+    # Add the row
+    postal_coords <- rbind(postal_coords, new_row)
+  }
+  return(postal_coords)
+}
+```
+
+```{r}
+#| eval: false
+coords <- get_coords(add_list)
+```
+
+```{r}
+#| eval: false
+write_rds(coords, "data/HDB/rds/coords.rds")
+```
+
+```{r}
+coords <- read_rds("data/HDB/rds/coords.rds")
+```
+
+```{r}
+# Ensure that both address columns are in uppercase and have consistent formatting
+resale_tidy <- resale_tidy %>%
+  mutate(address = toupper(address))
+
+coords <- coords %>%
+  mutate(address = toupper(address))
+
+# Perform the join by address column
+resale_combined <- resale_tidy %>%
+  left_join(coords, by = "address")
+```
+
+```{r}
+# Select and arrange columns in the specified order
+resale_final <- resale_combined %>%
+  select(resale_price, town, region, flat_type, flat_model, floor_area_sqm, storey_avg, remaining_lease_total_mths, latitude, longitude)
+
+# Display the final data
+head(resale_final)
+
+# Convert resale_final to an sf object if it has latitude and longitude columns
+resale_final <- resale_final %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)  # Set the original CRS (e.g., WGS84)
+
+# Transform to the desired CRS (e.g., Singapore's SVY21 CRS)
+resale_final <- st_transform(resale_final, crs = 3414)
+```
+
+### Secondary Data — Locational Data
+
+To enhance the predictive model, we incorporate secondary data sources to capture locational factors that influence HDB resale prices. These factors typically require geographic data about the proximity to amenities, which can be collected from multiple sources:
+
+-   **Public Transportation (MRT Stations)**:
+
+    -   **Data Source**: **LTA MRT Station Exit (GEOJSON)** dataset from [Data.gov.sg](https://data.gov.sg/), provided by the Land Transport Authority (LTA).
+    -   **Purpose**: This dataset provides the geographical coordinates of each MRT station exit. Using this data will allow us to calculate the precise distance from HDB flats to the nearest MRT exit, giving a more accurate measure of accessibility than a central station location would.
+    -   **Usage in Analysis**: By incorporating MRT station exits instead of just station locations, we can improve the precision of our proximity calculations. Proximity to MRT stations is a critical factor influencing HDB resale prices, as flats closer to MRT exits are generally more attractive to buyers due to the ease of access to public transport.
+    -   By using MRT station exit data, we can calculate the shortest walking distance from each HDB flat to the nearest MRT exit, enhancing the locational data quality and potentially improving the predictive power of the model for HDB resale prices.
+
+```{r}
+#| eval: false
+mrt <- st_read("data/Locational/rawdata/mrt.geojson")
+mrt <- st_transform(mrt, crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to MRT station
+nearest_mrt <- st_nearest_feature(resale_final, mrt)
+resale_final <- resale_final %>%
+  mutate(proximity_to_mrt = st_distance(resale_final, mrt[nearest_mrt, ], by_element = TRUE))%>%
+  mutate(proximity_to_mrt = as.numeric(proximity_to_mrt) / 1000)  # Convert meters to km
+```
+
+-   **Good Primary Schools**:
+
+    -   **Data Source**: Ministry of Education’s data on schools (from the CSV file provided) and additional information from [Math Nuggets - Primary School Rankings 2024](https://mathnuggets.sg/best-primary-schools-in-singapore/).
+
+        | Ranking | School                                    |
+        |---------|-------------------------------------------|
+        | 1       | Methodist Girls' School (Primary)         |
+        | 2       | Tao Nan School                            |
+        | 3       | Ai Tong School                            |
+        | 4       | Holy Innocents' Primary School            |
+        | 5       | CHIJ St. Nicholas Girls' School (Primary) |
+        | 6       | Admiralty Primary School                  |
+        | 7       | St. Joseph's Institution Junior           |
+        | 8       | Catholic High School (Primary)            |
+        | 9       | Anglo-Chinese School (Junior)             |
+        | 10      | Chongfu School                            |
+        | 11      | Kong Hwa School                           |
+        | 12      | St. Hilda's Primary School                |
+        | 13      | Anglo-Chinese School (Primary)            |
+        | 14      | Nan Chiau Primary School                  |
+        | 15      | Nan Hua Primary School                    |
+        | 16      | Nanyang Primary School                    |
+        | 17      | Pei Hwa Presbyterian Primary School       |
+        | 18      | Kuo Chuan Presbyterian Primary School     |
+        | 19      | Rulang Primary School                     |
+        | 20      | Singapore Chinese Girls' Primary School   |
+
+        : Primary School Rankings 2024, extracted from: [*https://mathnuggets.sg/best-primary-schools-in-singapore/*](https://mathnuggets.sg/best-primary-schools-in-singapore/)
+
+    -   **Purpose**: Proximity to top 20 primary schools often increases property values due to the demand for accessible quality education. This analysis will focus on the top primary schools as per the 2024 rankings, which will be scraped from the website. Only the schools ranked as the best in Singapore will be included in the dataset, filtered to match the `school_name` field in full capital letters for consistency.
+
+```{r}
+#| eval: false
+# Load the CSV file with school information
+school_data <- read.csv("data/Locational/rawdata/Generalinformationofschools.csv")
+
+# Define a list of top 20 primary schools in uppercase
+top_schools <- c(
+  "METHODIST GIRLS' SCHOOL (PRIMARY)", 
+  "TAO NAN SCHOOL",
+  "AI TONG SCHOOL",
+  "HOLY INNOCENTS' PRIMARY SCHOOL",
+  "CHIJ ST. NICHOLAS GIRLS' SCHOOL",
+  "ADMIRALTY PRIMARY SCHOOL",
+  "ST. JOSEPH'S INSTITUTION JUNIOR",
+  "CATHOLIC HIGH SCHOOL",
+  "ANGLO-CHINESE SCHOOL (JUNIOR)",
+  "CHONGFU SCHOOL",
+  "KONG HWA SCHOOL",
+  "ST. HILDA'S PRIMARY SCHOOL",
+  "ANGLO-CHINESE SCHOOL (PRIMARY)",
+  "NAN CHIAU PRIMARY SCHOOL",
+  "NAN HUA PRIMARY SCHOOL",
+  "NANYANG PRIMARY SCHOOL",
+  "PEI HWA PRESBYTERIAN PRIMARY SCHOOL",
+  "KUO CHUAN PRESBYTERIAN PRIMARY SCHOOL",
+  "RULANG PRIMARY SCHOOL",
+  "SINGAPORE CHINESE GIRLS' PRIMARY SCHOOL"
+)
+
+# Filter the CSV data to keep only rows with top primary schools
+filtered_school_data <- school_data %>%
+  filter(school_name %in% top_schools) %>%
+  select(school_name, postal_code)
+
+# Prepare list of postal codes
+postal_codes <- filtered_school_data$postal_code
+
+# Use the get_coords function to retrieve coordinates
+school_coords <- get_coords(postal_codes)
+
+# Convert postal_code to character in filtered_school_data
+filtered_school_data <- filtered_school_data %>%
+  mutate(postal_code = as.character(postal_code))
+
+# Merge the coordinates back with the filtered school data
+final_school_data <- filtered_school_data %>%
+  left_join(school_coords, by = c("postal_code" = "postal"))
+
+# Display final dataset
+head(final_school_data)
+
+# Convert final_school_data to an sf object if it has latitude and longitude columns
+final_school_data <- final_school_data %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)  # Set the original CRS (e.g., WGS84)
+
+# Transform to the desired CRS (e.g., Singapore's SVY21 CRS)
+final_school_data <- st_transform(final_school_data, crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to good school
+nearest_goodprisch <- st_nearest_feature(resale_final, final_school_data)
+resale_final <- resale_final %>%
+  mutate(proximity_to_goodprisch = st_distance(resale_final, final_school_data[nearest_goodprisch, ], by_element = TRUE))%>%
+  mutate(proximity_to_goodprisch = as.numeric(proximity_to_goodprisch) / 1000)  # Convert meters to km
+```
+
+```{r}
+#| eval: false
+#Create a buffer of 1km around each resale flat
+buffer_1km <- st_buffer(resale_final, 
+                        dist = 1000)
+
+#Plot the newly created buffers and each good primary school
+tmap_mode("view")
+tm_shape(buffer_1km) +
+  tm_polygons() +
+tm_shape(final_school_data) +
+  tm_dots()
+
+#Count the number of good primary schools
+resale_final$within_1km_prisch <- lengths(
+  st_intersects(buffer_1km, final_school_data))
+```
+
+-   **Healthcare and Eldercare Facilities**:
+
+    -   **Data Source**: dataset from [Data.gov.sg](https://data.gov.sg/), provided by the Ministry of Health (MOH).
+
+    -   **Purpose**: Accessibility to healthcare facilities can be a factor, especially for buyers looking for long-term residence or properties suitable for elderly family members.
+
+```{r}
+#| eval: false
+eldercare <- st_read(dsn = "data/Locational/rawdata",
+                     layer = "ELDERCARE") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to eldercare
+nearest_eldercare <- st_nearest_feature(resale_final, eldercare)
+resale_final <- resale_final %>%
+  mutate(proximity_to_eldercare = st_distance(resale_final, eldercare[nearest_eldercare, ], by_element = TRUE))%>%
+  mutate(proximity_to_eldercare = as.numeric(proximity_to_eldercare) / 1000)  # Convert meters to km
+```
+
+```{r}
+#| eval: false
+CHAS <- st_read("data/Locational/rawdata/CHAS Clinics.kml") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to CHAS clinic
+nearest_CHAS <- st_nearest_feature(resale_final, CHAS)
+resale_final <- resale_final %>%
+  mutate(proximity_to_CHAS = st_distance(resale_final, CHAS[nearest_CHAS, ], by_element = TRUE))%>%
+  mutate(proximity_to_CHAS = as.numeric(proximity_to_CHAS) / 1000)  # Convert meters to km
+```
+
+-   **Supermarkets:**
+
+    -   **Data Source**: dataset from [Data.gov.sg](https://data.gov.sg/), provided by the Singapore Food Agency (SFA).
+    -   **Purpose**: Supermarkets play a crucial role in daily life by providing access to essential groceries and household items. Proximity to a supermarket is highly desirable for residents, especially for families. As such, flats located near supermarkets are generally more attractive, as they offer added convenience for everyday needs, positively impacting resale prices.
+
+```{r}
+#| eval: false
+spmrkt <- st_read("data/Locational/rawdata/Supermarket.geojson")
+summary(spmrkt)
+spmrkt <- st_transform(spmrkt, crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to supermarket
+nearest_spmrkt <- st_nearest_feature(resale_final, spmrkt)
+resale_final <- resale_final %>%
+  mutate(proximity_to_spmrkt = st_distance(resale_final, spmrkt[nearest_spmrkt, ], by_element = TRUE))%>%
+  mutate(proximity_to_spmrkt = as.numeric(proximity_to_spmrkt) / 1000)  # Convert meters to km
+```
+
+-   **Food Amenities:**
+
+    -   **Data Source**: dataset from [Data.gov.sg](https://data.gov.sg/), provided by the National Environment Agency (NEA).
+    -   **Purpose**: Access to diverse food options is highly valued in Singapore. Flats located near popular hawker centers are likely to have higher resale values, as they offer residents convenient access to a variety of affordable dining options, enhancing the lifestyle appeal of the location.
+
+```{r}
+#| eval: false
+hawker <- st_read("data/Locational/rawdata/Hawker.geojson")
+summary(hawker)
+hawker <- st_transform(hawker, crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to hawker
+nearest_hawker <- st_nearest_feature(resale_final, hawker)
+resale_final <- resale_final %>%
+  mutate(proximity_to_hawker = st_distance(resale_final, hawker[nearest_hawker, ], by_element = TRUE))%>%
+  mutate(proximity_to_hawker = as.numeric(proximity_to_hawker) / 1000)  # Convert meters to km
+```
+
+-   **Parks and Nature Reserves**:
+
+    -   **Data Source**: dataset from [Data.gov.sg](https://data.gov.sg/), provided by the National Parks Board (NPARKS).
+
+    -   **Purpose**: Proximity to parks and nature reserves can increase property appeal for families and nature enthusiasts.
+
+```{r}
+#| eval: false
+parks <- st_read("data/Locational/rawdata/Parks.kml") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to parks and nature reserves
+nearest_parks <- st_nearest_feature(resale_final, parks)
+resale_final <- resale_final %>%
+  mutate(proximity_to_parks = st_distance(resale_final, parks[nearest_parks, ], by_element = TRUE))%>%
+  mutate(proximity_to_parks = as.numeric(proximity_to_parks) / 1000)  # Convert meters to km
+```
+
+-   **Childcare Facilities**:
+
+    -   **Data Source**: Childcare center locations from [Data.gov.sg](https://data.gov.sg/) or private datasets if available.
+
+    -   **Purpose**: The presence of childcare facilities nearby is valuable for young families, potentially influencing their interest in the property.
+
+```{r}
+#| eval: false
+childcare <- st_read("data/Locational/rawdata/Childcare.geojson") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to childcare
+nearest_childcare <- st_nearest_feature(resale_final, childcare)
+resale_final <- resale_final %>%
+  mutate(proximity_to_childcare = st_distance(resale_final, childcare[nearest_childcare, ], by_element = TRUE))%>%
+  mutate(proximity_to_childcare = as.numeric(proximity_to_childcare) / 1000)  # Convert meters to km
+```
+
+```{r}
+#| eval: false
+#Create a buffer of 350m around each resale flat
+buffer_350m <- st_buffer(resale_final, 
+                        dist = 350)
+
+#Plot the newly created buffers and each childcare
+tmap_mode("view")
+tm_shape(buffer_350m) +
+  tm_polygons() +
+tm_shape(childcare) +
+  tm_dots()
+
+#Count the number of childcare
+resale_final$within_350m_childcare <- lengths(
+  st_intersects(buffer_350m, childcare))
+```
+
+-   **Public Transportation Accessibility**:
+
+    -   **Bus Stops**: Data on bus stop locations within 350m or 1km from the property, sourced from [LTA’s DataMall](https://datamall.lta.gov.sg/content/datamall/en.html)
+
+    -   **Purpose**: Ease of access to public transportation increases a property’s attractiveness and can be a significant factor in resale value.
+
+```{r}
+#| eval: false
+busstop <- st_read(dsn = "data/Locational/rawdata",
+                     layer = "BusStop") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to bus stop
+nearest_busstop <- st_nearest_feature(resale_final, busstop)
+resale_final <- resale_final %>%
+  mutate(proximity_to_busstop = st_distance(resale_final, busstop[nearest_busstop, ], by_element = TRUE))%>%
+  mutate(proximity_to_busstop = as.numeric(proximity_to_busstop) / 1000)  # Convert meters to km
+```
+
+```{r}
+#| eval: false
+#Plot the newly created buffers and each bus stops
+tmap_mode("view")
+tm_shape(buffer_350m) +
+  tm_polygons() +
+tm_shape(busstop) +
+  tm_dots()
+
+#Count the number of bus stops
+resale_final$within_350m_busstop <- lengths(
+  st_intersects(buffer_350m, busstop))
+```
+
+-   **Shopping Amenities**:
+
+    -   **Data Source**: Location data on shopping malls can be sourced from OpenStreetMap or business directories in Singapore.
+    -   **Purpose**: Shopping malls provide access to a wide range of retail options, entertainment, and services, which enhance the appeal of nearby properties. Flats close to malls are often in higher demand due to the convenience of having various amenities within reach, potentially increasing resale values.
+
+```{r}
+#| eval: false
+# Define the URL of the Wikipedia page
+url <- "https://en.wikipedia.org/wiki/List_of_shopping_malls_in_Singapore"
+
+# Read the HTML content of the page
+page <- read_html(url)
+
+# Extract mall names from list items across all sections
+mall <- page %>%
+  html_nodes("ul > li") %>% # Selects all list items that are direct children of unordered lists
+  html_text()
+
+# Filter mall names to exclude non-mall related content, if needed
+mall <- mall[mall != ""]
+
+# Remove the "[1]" notation from Knightsbridge or similar entries
+mall <- gsub("\\[1\\]", "", mall)
+
+# Extract only lines 50 to 223
+mall <- mall[50:223]
+
+# Make specific replacements in the extracted range
+mall[42] <- gsub("GRiD\\(pomo\\)", "GR.ID", mall[42])  # Change "GRiD(pomo)" to "GR.ID"
+mall[85] <- gsub("Paya Lebar Quarter \\(PLQ\\)", "Paya Lebar Quarter", mall[85])  # Change "Paya Lebar Quarter (PLQ)" to "Paya Lebar Quarter"
+
+# Print extracted and modified mall names for the specified range
+print(mall)
+
+```
+
+```{r}
+#| eval: false
+# Function to get coordinates from OneMap API
+get_coordinates <- function(mall_name) {
+  base_url <- "https://www.onemap.gov.sg/api/common/elastic/search?"
+  response <- GET(base_url, query = list(searchVal = mall_name, returnGeom = "Y", getAddrDetails = "N"))
+  data <- content(response, "parsed")
+  if (length(data$results) > 0) {
+    result <- data$results[[1]]
+    return(c(result$X, result$Y))
+  } else {
+    return(c(NA, NA))
+  }
+}
+
+# Initialize vectors to store coordinates
+x_coords <- numeric(length(mall))
+y_coords <- numeric(length(mall))
+
+# Loop through each mall name to get coordinates
+for (i in seq_along(mall)) {
+  coords <- get_coordinates(mall[i])
+  x_coords[i] <- coords[1]
+  y_coords[i] <- coords[2]
+  Sys.sleep(1)  # Pause to respect API rate limits
+}
+
+# Combine mall names and their coordinates into a data frame
+mall_coord <- data.frame(
+  Mall_Name = mall,
+  longitude = x_coords,
+  latitude = y_coords,
+  stringsAsFactors = FALSE
+)
+
+# Print the data frame to check the results
+print(mall_coord)
+```
+
+```{r}
+#| eval: false
+# Convert to an sf object with EPSG:3414 (SVY21 coordinate system for Singapore)
+mall_coord <- mall_coord %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 3414)  # Set the original CRS (e.g., WGS84)
+
+# Print the updated mall_coord to view the geometry points in (longitude, latitude)
+print(mall_coord)
+```
+
+```{r}
+#| eval: false
+write_rds(mall_coord, "data/HDB/rds/mall_coord.rds")
+```
+
+```{r}
+#| eval: false
+mall_coord <- read_rds("data/HDB/rds/mall_coord.rds")
+```
+
+```{r}
+#| eval: false
+# Plot using tmap
+tmap_mode("view")
+tm_shape(mall_coord) +
+  tm_dots(col = "blue", size = 0.1, alpha = 0.8) +
+  tm_basemap("OpenStreetMap")
+```
+
+```{r}
+#| eval: false
+# Calculate nearest distance to shopping mall
+nearest_mall <- st_nearest_feature(resale_final, mall_coord)
+resale_final <- resale_final %>%
+  mutate(proximity_to_mall = st_distance(resale_final, mall_coord[nearest_mall, ], by_element = TRUE))%>%
+  mutate(proximity_to_mall = as.numeric(proximity_to_mall) / 1000)  # Convert meters to km
+```
+
+```{r}
+#| eval: false
+write_rds(resale_final, "data/HDB/rds/resale_final.rds")
+```
+
+```{r}
+resale_final <- read_rds("data/HDB/rds/resale_final.rds")
+```
+
+Each of these secondary data sources will be processed to derive proximity variables (e.g., distance to nearest MRT station, number of schools within 1km) for inclusion in the predictive model. This helps capture the spatial elements that influence property prices beyond the structural features of the flats themselves.
+
+### Spatial Autocorrelation Check
+
+The purpose of checking for spatial autocorrelation is to determine whether HDB resale prices exhibit spatial dependency. If there is a significant spatial autocorrelation, it means that the prices of nearby HDB flats tend to be similar. This spatial dependency justifies the use of geographically weighted models, which are designed to handle location-based variations.
+
+Moran's I is a statistical measure that assesses the degree of spatial autocorrelation in a dataset. It ranges from -1 to +1:
+
+-   **Positive Values**: Indicate positive spatial autocorrelation, where similar values (e.g., high or low resale prices) are clustered together.
+
+-   **Negative Values**: Indicate negative spatial autocorrelation, where dissimilar values are adjacent.
+
+-   **Value Near Zero**: Suggests spatial randomness, where there is no clear pattern in the spatial distribution.
+
+Ensure that the `coords` data is in spatial format (e.g., `sf` object in R) with coordinates for each resale flat. We'll need latitude and longitude coordinates for each record to analyze spatial relationships.
+
+A spatial weight matrix defines the spatial relationships between points. We can create a weight matrix based on distance or neighborhood contiguity.
+
+For HDB flats, a distance-based approach (e.g., nearest neighbors) is often appropriate.
+
+When calculating k-nearest neighbors, identical points cause issues because the algorithm cannot uniquely identify the nearest neighbors if multiple points are located at the same coordinates. We can aggregate the data by averaging or summing relevant attributes to keep one unique location per point.
+
+```{r}
+#| eval: false
+resale_aggregated <- resale_final %>%
+  group_by(flat_type, floor_area_sqm, storey_avg, remaining_lease_total_mths, geometry) %>%
+  summarize(
+    resale_price = mean(resale_price, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+#| eval: false
+write_rds(resale_aggregated, "data/HDB/rds/resale_aggregated.rds")
+```
+
+```{r}
+resale_aggregated <- read_rds("data/HDB/rds/resale_aggregated.rds")
+```
+
+Use Moran's I to test for spatial autocorrelation of resale prices across the dataset.
+
+A significant Moran’s I value (with a p-value \< 0.05) indicates spatial autocorrelation, suggesting that geographically weighted models (e.g., GWR) are appropriate for this analysis.
+
+Interpret Moran's I Results:
+
+-   **Positive Moran's I Value (with significant p-value)**: Indicates clustering of similar prices (e.g., high or low resale prices in specific areas), justifying the use of geographically weighted models to account for spatial variability.
+
+-   **Non-significant Moran's I Value (or close to zero)**: Implies no spatial autocorrelation, suggesting that traditional models like Ordinary Least Squares (OLS) might be sufficient as there is no strong spatial dependency in the data.
+
+```{r}
+#| eval: false
+# Convert geometry to spatial coordinates for neighborhood matrix
+coords <- st_coordinates(resale_aggregated)
+
+# Create a k-nearest neighbor structure
+knn <- knearneigh(coords, k = 5)  # Set k to the desired number of neighbors
+nb <- knn2nb(knn)
+weight_matrix <- nb2listw(nb, style = "W")
+
+# Calculate Moran's I
+moran_test <- moran.test(resale_aggregated$resale_price, weight_matrix)
+```
+
+```{r}
+#| eval: false
+write_rds(moran_test, "data/HDB/rds/moran_test.rds")
+```
+
+```{r}
+moran_test <- read_rds("data/HDB/rds/moran_test.rds")
+```
+
+```{r}
+# View results
+print(moran_test)
+```
+
+To interpret the results of Moran's I test for spatial autocorrelation, let's break down the key components of the output:
+
+#### Moran's I Statistic:
+
+-   **Value**: approximately 0.662
+
+-   **Interpretation**: Moran's I ranges from -1 to +1. Values close to +1 indicate strong positive spatial autocorrelation, meaning similar values are clustered together in space. Values close to -1 indicate strong negative spatial autocorrelation, meaning dissimilar values are located near each other. A value of 0 suggests a random spatial pattern (no spatial autocorrelation).
+
+-   In your case, a Moran's I of approximately 0.662 indicates moderate to strong positive spatial autocorrelation. This suggests that higher resale prices tend to cluster with other higher resale prices, and lower prices tend to cluster with other lower prices in the spatial layout of your dataset.
+
+#### Expectation:
+
+-   **Value**: -4.329942e-05 (close to zero).
+
+-   **Interpretation**: This is the expected value of Moran's I under the null hypothesis of spatial randomness (no spatial autocorrelation). If the observed Moran's I significantly deviates from this expectation, it suggests spatial autocorrelation.
+
+#### Variance:
+
+-   **Value**: 1.480471e-05
+
+-   **Interpretation**: This is the variance of Moran's I under the null hypothesis, used to calculate the significance of the observed statistic.
+
+#### Standard Deviation and P-Value:
+
+-   **Standard Deviation**: 171.99
+
+-   **P-Value**: \<2.2e-16
+
+-   **Interpretation**: The very low p-value indicates that the observed Moran's I is statistically significant, rejecting the null hypothesis of spatial randomness. This means there is strong evidence of spatial clustering in resale prices, with a pattern that is unlikely to have occurred by random chance.
+
+#### Summary of Interpretation
+
+-   **Spatial Pattern**: There is strong evidence of spatial autocorrelation in resale prices, indicating that properties with similar prices are geographically clustered.
+
+-   **Significance**: The significant p-value (very close to zero) confirms that the observed spatial pattern is statistically meaningful.
+
+-   **Practical Implication**: Spatial factors such as proximity to amenities, neighborhood quality, or other spatially dependent factors may be influencing resale prices. You may consider using geographically weighted regression (GWR) or other spatial models to further explore these spatial relationships.
+
+#### Geographical Clusters of High and Low Prices:
+
+-   Darker blue colors represent higher resale prices, while lighter yellow colors represent lower prices.
+
+-   There appear to be clusters of higher-priced flats in certain areas, likely around central or well-connected neighborhoods, as well as newer developments. This clustering aligns with the positive spatial autocorrelation indicated by Moran's I test, where high-price units tend to be near other high-price units, and similarly for lower-priced units.
+
+## Exploratory Data Analysis (EDA)
+
+EDA is essential to understand the dataset, identify patterns, and prepare it for modeling. The steps below guide you through performing a thorough EDA, with each component addressing different aspects of the data.
+
+### Descriptive Statistics
+
+The first step in EDA is to generate descriptive statistics, which provide a numerical summary of key variables. By calculating metrics like the mean, median, standard deviation, minimum, and maximum for resale prices, as well as structural features like the area, floor level, remaining lease, and age of the unit, we can get a sense of the central tendencies and variability in the data.
+
+This overview is helpful for spotting potential outliers or variations that may influence resale prices. For example, high variability in resale prices might indicate a wide range of property values across different regions and flat types. Descriptive statistics also help establish a baseline understanding of the dataset, highlighting the general characteristics of HDB flats within the specified time range.
+
+The codes chunks below uses `glimpse()` to display the data structure of will do the job.
+
+```{r}
+glimpse(resale_final)
+```
+
+Next, `summary()` of base R is used to display the summary statistics of resale_final tibble data frame.
+
+```{r}
+summary(resale_final)
+```
+
+### Visualize Relationships
+
+To gain insights into the relationships between resale prices and various structural and locational features, we can create scatter plots and violin plots.
+
+Scatter plots allow us to examine how resale prices vary with continuous variables like area, age, and remaining lease. For instance, plotting resale price against area may reveal a positive trend, suggesting that larger flats generally command higher prices. Similarly, a scatter plot of resale price versus age could show whether older flats have lower resale values, providing insight into the impact of depreciation. By mapping prices geographically, we can identify areas with higher or lower resale values, giving us an understanding of spatial clustering in the data. These visualizations make it easier to observe trends and relationships that may not be apparent from summary statistics alone.
+
+```{r}
+#| eval: false
+# Scatter plot: Resale price vs Area
+plot_area <- ggplot(resale_final, aes(x = floor_area_sqm, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Area", x = "Area (sqm)", y = "Resale Price")
+ggsave("plot_resale_price_vs_area.png", plot = plot_area, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Storey
+plot_storey <- ggplot(resale_final, aes(x = storey_avg, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Storey", x = "Storey", y = "Resale Price")
+ggsave("plot_resale_price_vs_storey.png", plot = plot_storey, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Age of Flat
+plot_age <- ggplot(resale_final, aes(x = remaining_lease_total_mths, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Age of Flat", x = "Age (months)", y = "Resale Price")
+ggsave("plot_resale_price_vs_age.png", plot = plot_age, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest MRT exits
+plot_mrt <- ggplot(resale_final, aes(x = proximity_to_mrt, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest MRT exits", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_mrt.png", plot = plot_mrt, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Good Primary School
+plot_goodprisch <- ggplot(resale_final, aes(x = proximity_to_goodprisch, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Good Primary School", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_goodprisch.png", plot = plot_goodprisch, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs No. of Good Primary School within 1km
+plot_prisch <- ggplot(resale_final, aes(x = within_1km_prisch, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. No. of Good Primary School within 1km", x = "No. of Good Primary Schools", y = "Resale Price")
+ggsave("plot_resale_price_vs_within_1km_prisch.png", plot = plot_prisch, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Eldercare
+plot_eldercare <- ggplot(resale_final, aes(x = proximity_to_eldercare, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Eldercare", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_eldercare.png", plot = plot_eldercare, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest CHAS Clinic
+plot_chas <- ggplot(resale_final, aes(x = proximity_to_CHAS, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest CHAS Clinic", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_chas.png", plot = plot_chas, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Supermarket
+plot_spmrkt <- ggplot(resale_final, aes(x = proximity_to_spmrkt, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Supermarket", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_spmrkt.png", plot = plot_spmrkt, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Hawker
+plot_hawker <- ggplot(resale_final, aes(x = proximity_to_hawker, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Hawker", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_hawker.png", plot = plot_hawker, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Park
+plot_parks <- ggplot(resale_final, aes(x = proximity_to_parks, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Park", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_parks.png", plot = plot_parks, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs No. of Childcares within 350m
+plot_childcare <- ggplot(resale_final, aes(x = within_350m_childcare, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. No. of Childcares within 350m", x = "No. of Childcares", y = "Resale Price")
+ggsave("plot_resale_price_vs_childcare.png", plot = plot_childcare, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Bus Stop
+plot_busstop <- ggplot(resale_final, aes(x = proximity_to_busstop, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Bus Stop", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_busstop.png", plot = plot_busstop, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs No. of Bus Stops within 350m
+plot_within_busstop <- ggplot(resale_final, aes(x = within_350m_busstop, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. No. of Bus Stops within 350m", x = "No. of Bus Stops", y = "Resale Price")
+ggsave("plot_resale_price_vs_within_busstop.png", plot = plot_within_busstop, width = 7, height = 5, dpi = 300)
+
+# Scatter plot: Resale price vs Proximity to Nearest Mall
+plot_mall <- ggplot(resale_final, aes(x = proximity_to_mall, y = resale_price)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Resale Price vs. Proximity to Nearest Mall", x = "Distance (km)", y = "Resale Price")
+ggsave("plot_resale_price_vs_mall.png", plot = plot_mall, width = 7, height = 5, dpi = 300)
+```
+
+![](image/plot_resale_price_vs_area.png)
+
+**Resale Price vs. Area (sqm)**: There is a strong positive relationship, with resale prices increasing as the floor area of the property increases, indicating that larger flats are valued higher.
+
+![](image/plot_resale_price_vs_storey.png)
+
+**Resale Price vs. Storey**: Higher floors appear to have a slight positive effect on resale prices, possibly due to better views or reduced noise.
+
+![](image/plot_resale_price_vs_age.png)
+
+**Resale Price vs. Age of Flat (months)**: Older flats show a decrease in resale price, indicating that newer flats are generally more desirable.
+
+![](image/plot_resale_price_vs_mrt.png)
+
+**Resale Price vs. Proximity to Nearest MRT exits**: Properties closer to MRT exits have higher resale prices, showing that accessibility to public transportation is a key factor in property valuation.
+
+![](image/plot_resale_price_vs_goodprisch.png)
+
+**Resale Price vs. Proximity to Nearest Good Primary School**: There is no strong correlation between proximity to a good primary school and resale prices, indicating limited impact on value.
+
+![](image/plot_resale_price_vs_within_1km_prisch.png)
+
+**Resale Price vs. No. of Good Primary Schools within 1km**: The resale price seems to show minimal variation with the number of good primary schools within 1km, indicating that proximity to schools may not strongly influence pricing.
+
+![](image/plot_resale_price_vs_eldercare.png)
+
+**Resale Price vs. Proximity to Nearest Eldercare**: Resale prices tend to decrease slightly as distance from the nearest eldercare facility increases, suggesting that closer proximity to eldercare may have a small positive impact on property value.
+
+![](image/plot_resale_price_vs_chas.png)
+
+**Resale Price vs. Proximity to Nearest CHAS Clinic**: There is a weak negative correlation, where resale prices tend to be slightly higher when closer to CHAS clinics, though the effect appears minimal.
+
+![](image/plot_resale_price_vs_spmrkt.png)
+
+**Resale Price vs. Proximity to Nearest Supermarket**: Resale prices appear higher when closer to supermarkets, implying that proximity to essential amenities like supermarkets positively impacts housing prices.
+
+![](image/plot_resale_price_vs_hawker.png)
+
+**Resale Price vs. Proximity to Nearest Hawker Center**: Resale prices decrease with distance from hawker centers, suggesting that closeness to affordable food options is a desirable attribute.
+
+![](image/plot_resale_price_vs_parks.png)
+
+**Resale Price vs. Proximity to Nearest Park**: Proximity to parks shows some clustering of higher resale prices near parks, but the relationship is not very strong, as there is a wide spread across various distances.
+
+![](image/plot_resale_price_vs_childcare.png)
+
+**Resale Price vs. Number of Childcares within 350m**: The number of nearby childcares shows a more scattered trend, with resale prices higher around lower numbers of nearby childcare facilities. This may suggest that too many nearby childcares don’t significantly enhance property value.
+
+![](image/plot_resale_price_vs_busstop.png)
+
+**Resale Price vs. Proximity to Nearest Bus Stop**: There is a very dense clustering of data points close to bus stops, with no strong indication of increased resale price with proximity to bus stops. The resale prices are distributed widely regardless of proximity.
+
+![](image/plot_resale_price_vs_within_busstop.png)
+
+**Resale Price vs. Number of Bus Stops within 350m**: The resale price does not show a clear trend relative to the number of nearby bus stops. Although resale prices are generally higher for areas with fewer bus stops within 350m, the spread remains wide across different bus stop counts, suggesting that proximity to multiple bus stops within a short distance may not strongly influence resale price.
+
+![](image/plot_resale_price_vs_mall.png)
+
+**Resale Price vs. Proximity to Nearest Mall**: Resale prices tend to be slightly higher when closer to malls, indicating that proximity to malls may have a mild positive influence on prices. However, there’s still a significant spread across all distances.
+
+A violin plot is also an excellent choice for visualizing the distribution of resale prices across different regions and flat models because it combines elements of both a box plot and a kernel density plot. Here are specific reasons why a violin plot is suitable:
+
+1.  **Distribution Insight**: Violin plots provide a clear view of the distribution’s shape for each category, revealing where resale prices are concentrated and if there are multiple modes (peaks) in the data.
+
+2.  **Comparison Across Categories**: By plotting different regions and flat models side-by-side, we can easily compare the price distributions across categories and detect variations in spread, skewness, or the presence of outliers.
+
+3.  **Density Information**: Unlike box plots, violin plots show the density of the data at different price levels. This is helpful in understanding if resale prices cluster around certain values or if they are more uniformly distributed.
+
+We'll analyse 4-room flats specifically based on their popularity and representativeness in Singapore's housing market. Four-room flats are among the most common flat types in Singapore's HDB system, making them a relevant indicator of general market trends. By focusing on this category, we can gain insights into typical resale prices across regions while comparing different flat models. This narrower focus allows for more meaningful and consistent comparisons without the variability introduced by other flat types, which may have different price dynamics due to their size and demand characteristics.
+
+```{r}
+#| eval: false
+# Filter for 4-room flats only
+filtered_data <- resale_tidy %>%
+  filter(flat_type == "4 ROOM")  # Filtering for 4-room flats
+
+# Create the violin plot with facets for each region, using color for flat model
+plot <- ggplot(filtered_data, aes(x = "", y = resale_price, fill = flat_model)) +
+  geom_violin(trim = FALSE) +
+  facet_wrap(~ region, scales = "free", ncol = 2) +  # Arrange facets in two columns
+  labs(title = "Resale Prices of 4-Room Flats by Flat Model in Each Region",
+       x = "Region", y = "Resale Price") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),  # Remove x-axis text for readability
+        axis.title.x = element_blank()) +
+  guides(fill = guide_legend(title = "Flat Model"))
+
+# Save the plot as an image file
+ggsave("resale_prices_violin_plot.png", plot = plot, width = 10, height = 8)
+
+```
+
+![](image/resale_prices_violin_plot.png)
+
+The violin plot above provides insights into the distribution of resale prices for 4-room flats across various regions in Singapore, segmented by flat model. Here are some key observations:
+
+1.  **Regional Price Variability**:
+
+    -   **Central Region**: The resale prices in the Central region have the highest variability, with several flat models (such as Premium Apartment, DBSS) reaching close to \$1,500,000. This reflects the higher demand and premium associated with centrally located flats in Singapore.
+
+    -   **North-East Region**: Prices here are generally clustered within a narrower range between \$500,000 and \$800,000, with DBSS and Premium Apartment models showing higher resale values.
+
+    -   **East Region**: Similar to the North-East, the East region shows moderate resale values between \$500,000 and \$800,000, with DBSS flats on the higher end.
+
+    -   **North and West Regions**: These regions display the lowest price variability, with most models staying between \$400,000 and \$800,000. In the North, flat models like DBSS and Premium Apartment tend to show slightly higher resale values, though not as high as those in the Central or East regions.
+
+2.  **Flat Model Influence on Prices**:
+
+    -   **DBSS (Design, Build, and Sell Scheme)** and **Premium Apartment models** generally fetch higher resale prices across all regions. This is likely due to the enhanced design, additional amenities, and higher quality associated with these models.
+
+    -   **Standard and Simplified models** tend to have lower resale prices, indicating they are more basic options with fewer amenities, and thus appeal to buyers looking for affordability over additional features.
+
+    -   **New Generation and Model A** are popular across regions but usually fall into a mid-range price point, indicating a balanced offering of quality and affordability.
+
+3.  **Distribution and Density**:
+
+    -   Each violin plot represents the density of resale prices for a given flat model within a region. Wider areas in the violin plot indicate a higher concentration of resale transactions at a specific price point.
+
+    -   For example, in the **Central region**, Premium Apartment flats have a wide spread, suggesting a high concentration of resale prices around the median. However, in the **North-East region**, DBSS flats have a narrower spread, indicating that resale prices are more concentrated within a smaller range.
+
+4.  **Insights by Region**:
+
+    -   **Central Region**: Dominated by higher-value flats, with some models displaying very high resale prices due to the prime location.
+
+    -   **East and North-East Regions**: These regions offer a good mix of mid-to-high resale values, particularly for DBSS and Premium Apartment flats.
+
+    -   **North and West Regions**: These are more affordable regions, with flat models generally priced lower compared to the Central area.
+
+In summary, the Central region commands the highest prices, likely due to its proximity to the city center, while the other regions offer a range of mid- to high-priced flats, depending on the model. DBSS and Premium Apartments consistently have higher resale prices across all regions, indicating their premium value in the market. This plot helps identify patterns in resale prices by region and flat model, which could be valuable for buyers, investors, and policymakers.
+
+### Spatial Distribution Analysis
+
+A spatial distribution analysis allows us to understand how resale prices are geographically distributed across different regions of Singapore. By converting the dataset into a spatial format (e.g., `sf` object with latitude and longitude coordinates), we can create choropleth maps to show variations in resale prices. Using color gradients to represent different price levels, we can visually identify high-value and low-value clusters across Singapore.
+
+This approach highlights specific regions where resale prices are consistently higher or lower, such as areas near central business districts or regions with greater access to amenities. Spatial distribution analysis is particularly useful for understanding location-based trends and identifying regions that may warrant further investigation or targeted modeling techniques.
+
+```{r}
+# Visualize spatial distribution of resale prices
+tmap_mode("view")
+tm_shape(resale_final) +
+  tm_dots(col = "resale_price", palette = "YlOrRd", title = "HDB Resale Prices") +
+  tm_layout(title = "Spatial Distribution of HDB Resale Prices")
+```
+
+### Correlation Analysis
+
+Correlation analysis is an essential step for identifying which variables have the strongest influence on resale prices. By selecting relevant numerical columns, including resale price, area, age, remaining lease, and floor level, we can compute pairwise correlations and focus on relationships with resale price. The resulting correlation matrix provides a quick overview of how each feature is associated with resale price, revealing strong positive or negative correlations.
+
+Visualizing this matrix with a heatmap helps to quickly identify which factors are most influential. For example, a high positive correlation between area and resale price would indicate that larger flats tend to sell for more, while a negative correlation with age may suggest that older flats depreciate in value. This analysis informs which features are most relevant for predictive modeling, allowing us to focus on those that have a meaningful impact on resale prices.
+
+Based on the observations from the violin plot, we can select one region and one flat model. For example, we could choose the "Central" region and "DBSS" model if we're interested in high-value areas and premium flats, or the "West" region with "Standard" flats for a more affordable segment.
+
+```{r}
+# Filtering for Central region and DBSS flat model
+central_DBSS <- resale_final %>%
+  filter(flat_type == "4 ROOM", region == "Central", flat_model == "DBSS")
+
+# Filtering for West region and Simplified flat model
+West_Simplified <- resale_final %>%
+  filter(flat_type == "4 ROOM", region == "West", flat_model == "Simplified")
+```
+
+```{r}
+#| eval: false
+# Remove geometry and select specific columns
+central_DBSS_nogeo <- central_DBSS %>%
+  st_drop_geometry() %>%
+  select(-c(2:5))
+
+# Generate the correlation matrix plot
+correlation_plot <- ggcorrmat(central_DBSS_nogeo[, 2:16])
+
+# Save the correlation plot as an image file
+ggsave("central_DBSS_correlation_matrix.png", plot = correlation_plot, width = 10, height = 8)
+```
+
+![](image/central_DBSS_correlation_matrix.png)
+
+The correlation matrix for the "Central" region and "DBSS" model (high-value areas) shows the relationships between various attributes, such as proximity to amenities, storey level, floor area, and remaining lease. Here are some observations:
+
+1.  **Strong Positive Correlations**:
+
+    -   **Proximity to public transportation**: There is a strong positive correlation between `proximity_to_busstop` and `within_350m_busstop` (0.96) and between `proximity_to_childcare` and `within_350m_childcare` (0.96). This reflects that flats near these amenities are also generally close to other amenities in high-density, central areas.
+
+    -   **Between amenities**: `proximity_to_sprmkt` (supermarket) and `proximity_to_hawker` have a very high correlation (0.98), as do `proximity_to_parks` and `proximity_to_hawker` (0.91). This suggests that these amenities are often located near each other, increasing the overall desirability of these locations.
+
+2.  **Negative Correlations**:
+
+    -   **Remaining Lease and Proximity to Amenities**: There is a notable negative correlation between `remaining_lease_total_mths` and `proximity_to_sprmkt` (-0.75), `proximity_to_hawker` (-0.81), and `proximity_to_parks` (-0.67). This suggests that older flats (with shorter remaining leases) are located closer to these amenities, possibly due to urban planning changes over time that placed newer buildings farther from the center.
+
+    -   **Storey Level (Average) and Proximity to Amenities**: `storey_avg` shows negative correlations with amenities like `proximity_to_sprmkt` (-0.75) and `proximity_to_parks` (-0.67). This could indicate that higher floors are generally located in areas farther from these amenities, which might align with the planning for more luxurious high-rise buildings away from the central amenities.
+
+3.  **Non-significant Relationships**:
+
+    -   The matrix indicates non-significant correlations with an “X” mark, particularly in relationships with `storey_avg` and some proximity metrics. For instance, `storey_avg` and `proximity_to_goodprisch` (good primary schools) have an insignificant correlation. This suggests that the vertical positioning (floor level) of flats doesn’t meaningfully impact proximity to certain amenities, like schools.
+
+4.  **Implications for Resale Price Analysis**:
+
+    -   High positive correlations among amenity proximities imply that these factors could be clustered, affecting prices similarly. Since older properties are closer to key amenities (shown by the negative correlation with `remaining_lease_total_mths`), they may attract different buyer demographics compared to newer properties.
+
+    -   The lack of significant correlation between `storey_avg` and proximity variables for certain amenities may imply that floor level does not influence proximity benefits for high-value DBSS flats in the Central region.
+
+5.  **Recommendations for Modeling**:
+
+    -   **Feature Selection**: Given the high correlations among proximity variables, selecting a few representative amenities rather than all could prevent multicollinearity in models predicting resale prices.
+
+    -   **Cluster Analysis**: Grouping high-correlated amenities could be useful for understanding how proximity affects high-value property prices.
+
+    -   **Focus on Age-Related Factors**: Since remaining lease is strongly correlated with proximity to amenities, it may act as a proxy for central vs. peripheral location in older properties.
+
+```{r}
+#| eval: false
+# Remove geometry and select specific columns
+West_Simplified_nogeo <- West_Simplified %>%
+  st_drop_geometry() %>%
+  select(-c(2:5))
+
+# Generate the correlation matrix plot
+correlation_plot <- ggcorrmat(West_Simplified_nogeo[, 2:16])
+
+# Save the correlation plot as an image file
+ggsave("West_Simplified_correlation_matrix.png", plot = correlation_plot, width = 10, height = 8)
+```
+
+![](image/West_Simplified_correlation_matrix.png)
+
+The correlation matrix for the "West" region with "Standard" flats (an affordable segment) highlights the relationships between different factors influencing resale prices. Here’s a breakdown:
+
+1.  **Positive Correlations Among Amenities**:
+
+    -   There is a strong positive correlation between proximity variables such as `proximity_to_busstop` and `within_350m_busstop` (0.87), `proximity_to_childcare` and `within_350m_childcare` (0.72), and `proximity_to_goodprisch` and `within_1km_prisch` (0.74). This indicates that these amenities are clustered together, making specific areas more accessible and potentially more desirable.
+
+    -   Additionally, some proximity variables like `proximity_to_spmrkt` (supermarket) and `proximity_to_hawker` show a moderately positive correlation, suggesting that affordable regions have grouped amenities in certain neighborhoods, creating small commercial hubs.
+
+2.  **Negative Correlations with Remaining Lease**:
+
+    -   There is a moderately negative correlation between `remaining_lease_total_mths` and several proximity variables, such as `proximity_to_hawker` (-0.44) and `proximity_to_parks` (-0.38). This suggests that older flats with shorter leases tend to be closer to amenities, reflecting urban planning trends where older properties are located in more established areas with nearby amenities.
+
+3.  **Storey Level and Proximity to Amenities**:
+
+    -   The average storey level (`storey_avg`) shows weak correlations with most proximity variables, meaning that in the affordable segment, the vertical positioning (higher or lower floors) of flats is not strongly related to the distance to amenities. This could suggest that height is not a major factor in price determination within this segment in the West region.
+
+4.  **Non-significant Relationships**:
+
+    -   There are several non-significant correlations (marked with "X") across the matrix, particularly involving `storey_avg` and various amenity proximities. This lack of significant relationships implies that factors like floor level do not have a clear impact on the accessibility of amenities in affordable areas.
+
+5.  **Implications for Resale Price Analysis**:
+
+    -   The clustering of amenities and the moderate negative correlations with remaining lease suggest that proximity to amenities is more likely in older flats. This factor might be more relevant for affordability, as amenities can increase the desirability of older flats with shorter leases.
+
+    -   The overall weak correlation of `storey_avg` and the proximity variables points to a relatively uniform impact of accessibility, regardless of floor level, indicating that buyers in this segment may prioritize horizontal (location) rather than vertical accessibility.
+
+6.  **Recommendations for Further Analysis**:
+
+    -   **Modeling Strategy**: Since proximity variables are clustered, one could consider aggregating them or using principal component analysis (PCA) to reduce dimensionality in models predicting resale prices.
+
+    -   **Focus on Lease and Proximity**: Given the moderate relationship between lease length and amenity proximity, models could investigate how remaining lease length and accessibility to clustered amenities jointly affect property desirability.
+
+Overall, EDA provides a comprehensive understanding of the dataset through descriptive statistics, relationship visualizations, spatial distribution analysis, and correlation analysis. Each step contributes valuable insights: descriptive statistics offer a general overview, visualizations highlight trends and patterns, spatial analysis reveals geographical variations, and correlation analysis identifies the most influential factors. Together, these insights form the foundation for developing an effective predictive model for HDB resale prices.
+
+## Building a Hedonic Pricing Model by using Multiple Linear Regression Method
+
+To predict HDB resale prices effectively, we will start by establishing a multiple linear regression model. Next, we will explore geographically weighted models to capture spatial heterogeneity. This section outlines the key steps for building and evaluating these models.
+
+### Multiple Linear Regression Method
+
+The multiple linear regression model serves as a starting point for understanding the relationship between resale prices and various structural and locational factors. It assumes that relationships between predictors (like area, age, proximity to amenities) and resale price are consistent across all geographic locations.
+
+We'll be converting `flat_model` into a factor will automatically treat each category as a separate level in the model without needing one-hot encoding.
+
+```{r}
+#| eval: false
+# Convert `flat_type`, `region` and `flat_model` to factors
+resale_final <- resale_final %>%
+  mutate(flat_type = as.factor(flat_type),
+         region = as.factor(region),
+         flat_model = as.factor(flat_model))
+```
+
+The code chunk below using `lm()` to calibrate the multiple linear regression model.
+
+```{r}
+#| eval: false
+resale_mlr <- lm(formula = resale_price ~ 
+                 floor_area_sqm + 
+                 storey_avg + 
+                 remaining_lease_total_mths + 
+                 proximity_to_mrt + 
+                 proximity_to_goodprisch + 
+                 within_1km_prisch + 
+                 proximity_to_eldercare + 
+                 proximity_to_CHAS + 
+                 proximity_to_spmrkt + 
+                 proximity_to_hawker + 
+                 proximity_to_parks + 
+                 proximity_to_childcare + 
+                 within_350m_childcare + 
+                 proximity_to_busstop + 
+                 within_350m_busstop + 
+                 proximity_to_mall + 
+                 flat_type + 
+                 region + 
+                 flat_model,  # Assuming 'flat_type', 'region'                  , and 'flat_model' are factors
+                 data = resale_final)
+```
+
+```{r}
+#| eval: false
+write_rds(resale_mlr, "data/HDB/rds/resale_mlr.rds")
+```
+
+```{r}
+resale_mlr <- read_rds("data/HDB/rds/resale_mlr.rds")
+```
+
+### Preparing Publication Quality Table: olsrr method
+
+With reference to the report above, it is clear that not all the independent variables are statistically significant. We will revised the model by removing those variables which are not statistically significant.
+
+Now, we are ready to calibrate the revised model by using the code chunk below.
+
+```{r}
+ols_regress(resale_mlr)
+```
+
+### Preparing Publication Quality Table: gtsummary method
+
+The [**gtsummary**](https://www.danieldsjoberg.com/gtsummary/index.html) package provides an elegant and flexible way to create publication-ready summary tables in R.
+
+In the code chunk below, [`tbl_regression()`](https://www.danieldsjoberg.com/gtsummary/reference/tbl_regression.html) is used to create a well formatted regression report.
+
+```{r}
+tbl_regression(resale_mlr, intercept = TRUE)
+```
+
+### Key Insights:
+
+Several key insights about the fitted linear regression model:
+
+1.  **Overall Model Fit:**
+
+    -   The model shows a strong fit, with an **R-squared of 0.839** and an **Adjusted R-squared of 0.8385**, indicating that around 83.9% of the variance in resale prices is explained by the independent variables included in the model. This is a high R-squared value, suggesting the model is well-specified for predicting resale prices based on the available features.
+
+    -   The **Residual Standard Error of 64,570** suggests that predictions deviate by about this much on average, which may indicate room for further refinement, particularly in capturing nuances in higher-priced or unique units.
+
+2.  **Significance of Variables:**
+
+    -   Most predictors are statistically significant (p \< 0.05), as evidenced by the low p-values in the table. However, the **expanded table includes 95% Confidence Intervals (CI)** for each coefficient, allowing for an assessment of the precision of each estimate.
+
+    -   **Floor Area, Storey Average, and Remaining Lease** are all highly significant predictors with narrow confidence intervals, confirming that they are reliable indicators of resale price.
+
+3.  **Effect of Regions:**
+
+    -   Using the **Central region as a baseline**, we see that all other regions have negative coefficients. Specifically:
+
+        -   **East**: Resale prices are approximately SGD 107,452 lower than in the Central region, with a narrow confidence interval that confirms the precision of this estimate.
+
+        -   **North**: Shows an even larger negative effect on resale prices, about **SGD 193,077** lower than Central, suggesting that geographical proximity to Singapore’s urban core has a significant effect on property values.
+
+        -   **North-East and West**: These regions also display a significant price discount relative to Central, likely due to accessibility and perceived amenities.
+
+    -   This strong regional variation emphasizes the importance of location in resale pricing, with Central commanding the highest premium.
+
+4.  **Effect of Flat Model:**
+
+    -   The model uses **3Gen as the baseline flat model**. Different flat models show substantial variation in pricing. For example:
+
+        -   **Type S2** flats have a very high positive effect, with an estimated increase of approximately SGD 458,875 over the baseline, highlighting this model’s desirability or premium status.
+
+        -   Other high-value models like **DBSS (+SGD 191,297)** and **Improved-Maisonette (+SGD 176,552)** indicate that certain layouts or schemes, possibly due to exclusivity or enhanced facilities, contribute significantly to price.
+
+        -   In contrast, **Standard** flats have a modest positive impact of around **SGD 31,229**, showing that standard flat types are valued less compared to other premium models.
+
+    -   The inclusion of these models as categorical variables helps capture the inherent structural and aesthetic differences among units.
+
+5.  **Effect of Proximity to Amenities:**
+
+    -   Proximity measures to amenities like **MRT stations, bus stops, and parks** have notable effects on resale prices. For instance:
+
+        -   **Proximity to MRT (-SGD 24,106)**: Being closer to an MRT station reduces the resale price, suggesting that noise or congestion associated with MRT stations could be perceived negatively by buyers.
+
+        -   **Within 1km of Primary Schools (+SGD 7,761)**: This positively affects price, highlighting the appeal of accessible schooling for families.
+
+        -   **Proximity to Parks (-SGD 26,393)**: Despite parks being a positive amenity, the negative coefficient suggests that there might be other factors at play, such as over-saturation in certain areas.
+
+    -   The expanded model’s confidence intervals reinforce the interpretation of these proximity variables, with most intervals not overlapping zero, which confirms their significance.
+
+6.  **Effects of Flat Types (3 ROOM, 4 ROOM, 5 ROOM):**
+
+    -   The model treats **3 ROOM flats as the baseline**. Compared to 3 ROOM flats:
+
+        -   **4 ROOM flats** show a slight positive association with resale price, but the effect size (approximately **SGD 3,495**) is not statistically significant (p = 0.2), suggesting it does not differ much from the baseline in value.
+
+        -   **5 ROOM flats** have a larger, statistically significant positive effect (**+SGD 13,687**), indicating higher demand or perceived value for these larger units.
+
+7.  **Interpretation of Confidence Intervals:**
+
+    -   The inclusion of 95% confidence intervals for each predictor provides insight into the reliability of each estimate. For example:
+
+        -   For **Floor Area**, the CI ranges from **SGD 5,003 to SGD 5,359** per sqm, showing a tight interval that suggests high reliability.
+
+        -   For categorical variables, such as regions and flat models, the confidence intervals further confirm the significant differences among categories, especially for high-impact variables like DBSS and Type S2 models.
+
+8.  **Additional Model Diagnostics:**
+
+    -   **RMSE (Root Mean Square Error)** of **64,519** provides a sense of the average magnitude of residuals in the original resale price units. Given the price range, this suggests reasonable model accuracy but indicates room for fine-tuning.
+
+    -   **AIC and SBC** values, also shown in the model summary, are used for model comparison. Lower values indicate better model performance in terms of fit and complexity. These metrics might be useful if comparing against alternative models or specifications.
+
+::: callout-tip
+#### Summary
+
+This model successfully captures significant predictors of resale price, with clear regional and flat model effects, as well as a nuanced understanding of how proximity to amenities affects valuation. The high R-squared value and statistically significant predictors underscore the robustness of this model.
+:::

@@ -1,0 +1,19 @@
+project:
+  type: website
+
+website:
+  navbar:
+    left:
+      - href: "Take-home_Ex/Take-home_Ex03/Take-homeExercise3.1.qmd"
+        text: "Take-home Exercise 3.1"
+      - href: "Take-home_Ex/Take-home_Ex03/Take-homeExercise3.2.qmd"
+        text: "Take-home Exercise 3.2"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+
+editor: visual
+
